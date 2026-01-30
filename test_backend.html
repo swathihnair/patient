@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Backend Test</title>
+</head>
+<body>
+    <h1>Patient Monitoring Backend Test</h1>
+    <button onclick="testBackend()">Test Backend Connection</button>
+    <button onclick="testProcess()">Test Process Video</button>
+    <pre id="output"></pre>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        const output = document.getElementById('output');
+
+        async function testBackend() {
+            output.textContent = 'Testing backend connection...\n';
+            try {
+                const response = await fetch(`${API_URL}/`);
+                const data = await response.json();
+                output.textContent += 'SUCCESS: ' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                output.textContent += 'ERROR: ' + error.message;
+            }
+        }
+
+        async function testProcess() {
+            output.textContent = 'Testing video processing...\n';
+            try {
+                const response = await fetch(`${API_URL}/api/process-video/demo_video.mp4`, {
+                    method: 'POST'
+                });
+                output.textContent += `Response status: ${response.status}\n`;
+                const data = await response.json();
+                output.textContent += 'SUCCESS: ' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                output.textContent += 'ERROR: ' + error.message + '\n';
+                output.textContent += 'Error name: ' + error.name;
+            }
+        }
+    </script>
+</body>
+</html>
