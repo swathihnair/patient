@@ -3,12 +3,15 @@ import './index.css';
 import GeneralWard from './GeneralWard';
 
 const API_URL = 'http://localhost:8000';
+const GOOGLE_SHEETS_API = 'https://script.google.com/macros/s/AKfycbzKNdi0sXDXkcGLjKoP14deTqwITXq_lIvkCAvIXUJgKr9lk0ICd-SRwCcz4Vr5DbQZ/exec';
 
 function App() {
   const [alerts, setAlerts] = useState([]);
   const [uploadedFile, setUploadedFile] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [patientDetails, setPatientDetails] = useState(null);
+  const [loadingPatient, setLoadingPatient] = useState(false);
   const [stats, setStats] = useState({
     totalAlerts: 0,
     fallCount: 0,
@@ -68,6 +71,9 @@ function App() {
             : room
         ));
 
+        // Fetch patient details when alert is received
+        fetchPatientDetails(selectedRoom);
+
         // Play alert sound
         if (alert.severity === 'HIGH') {
           playAlertSound();
@@ -112,6 +118,36 @@ function App() {
 
     oscillator.start(audioContext.currentTime);
     oscillator.stop(audioContext.currentTime + 0.5);
+  };
+
+  const fetchPatientDetails = async (roomId) => {
+    setLoadingPatient(true);
+    try {
+      // Fetch patient details from Google Sheets
+      const response = await fetch(`${GOOGLE_SHEETS_API}?room=${roomId}`);
+      const data = await response.json();
+      
+      if (data && data.length > 0) {
+        setPatientDetails(data[0]); // Assuming first match is the patient
+      } else {
+        setPatientDetails({
+          name: `Patient in Room ${roomId}`,
+          room: `Room ${100 + roomId}`,
+          age: 'N/A',
+          condition: 'N/A',
+          notes: 'No patient data found'
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching patient details:', error);
+      setPatientDetails({
+        name: `Patient in Room ${roomId}`,
+        room: `Room ${100 + roomId}`,
+        error: 'Failed to load patient details'
+      });
+    } finally {
+      setLoadingPatient(false);
+    }
   };
 
   const handleFileSelect = (event) => {
@@ -348,6 +384,33 @@ function App() {
                     </div>
                   )}
                 </div>
+                
+                {/* Patient Details - Shows when room is selected and has alert */}
+                {selectedRoom === room.id && patientDetails && (
+                  <div className="room-patient-details">
+                    <div className="patient-detail-row">
+                      <span className="detail-label">ID:</span>
+                      <span className="detail-value">{patientDetails['patient id'] || patientDetails.patientId || 'N/A'}</span>
+                    </div>
+                    <div className="patient-detail-row">
+                      <span className="detail-label">Name:</span>
+                      <span className="detail-value">{patientDetails['patient name'] || patientDetails.patientName || patientDetails.name || 'N/A'}</span>
+                    </div>
+                    <div className="patient-detail-row">
+                      <span className="detail-label">Disease:</span>
+                      <span className="detail-value">{patientDetails.disease || 'N/A'}</span>
+                    </div>
+                    <div className="patient-detail-row">
+                      <span className="detail-label">Doctor:</span>
+                      <span className="detail-value">{patientDetails['doctor name'] || patientDetails.doctorName || 'N/A'}</span>
+                    </div>
+                    <div className="patient-detail-row">
+                      <span className="detail-label">Bystander:</span>
+                      <span className="detail-value">{patientDetails.bystander || 'N/A'}</span>
+                    </div>
+                  </div>
+                )}
+                
                 {room.lastAlert && (
                   <div className="room-last-alert">
                     Last: {room.lastAlert.type}

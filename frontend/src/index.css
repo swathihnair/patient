@@ -885,3 +885,137 @@ input[type="file"] {
 .fade-in {
   animation: fadeIn 0.6s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
+/* Patient Details Card */
+.patient-details-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: 2rem;
+  margin-bottom: 2rem;
+  box-shadow: var(--shadow-lg);
+  animation: slideIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.patient-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 2px solid var(--border-color);
+}
+
+.patient-header h3 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.loading-small {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: var(--accent-primary);
+  animation: spin 1s linear infinite;
+}
+
+.patient-info-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+}
+
+.patient-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem;
+  background: var(--bg-glass);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  transition: all var(--transition-base);
+}
+
+.patient-info-item:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+  border-color: var(--accent-primary);
+}
+
+.patient-info-item.full-width {
+  grid-column: 1 / -1;
+}
+
+.patient-info-item.error {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(220, 38, 38, 0.1));
+  border: 1px solid var(--accent-danger);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+}
+
+.info-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.info-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+@media (max-width: 768px) {
+  .patient-info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Room Patient Details */
+.room-patient-details {
+  padding: 1rem;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.1));
+  border-top: 2px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  animation: slideIn 0.3s ease-out;
+}
+
+.patient-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem;
+  background: var(--bg-glass);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.detail-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.detail-value {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.room-card.selected .room-patient-details {
+  border-top-color: var(--accent-primary);
+}
