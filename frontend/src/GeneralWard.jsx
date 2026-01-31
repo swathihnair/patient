@@ -175,11 +175,11 @@ function GeneralWard({ onBack }) {
                         {isComparing ? (
                             <>
                                 <span className="loading"></span>
-                                Analyzing with Gemini AI...
+                                Analysing the Ward...
                             </>
                         ) : (
                             <>
-                                🤖 Compare Images with Gemini AI
+                                🤖 Analysing the Ward
                             </>
                         )}
                     </button>

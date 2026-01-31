@@ -16,6 +16,10 @@ function App() {
     totalAlerts: 0,
     fallCount: 0,
     rapidMovementCount: 0,
+    seizureCount: 0,
+    bedExitCount: 0,
+    abnormalPostureCount: 0,
+    breathingAlertCount: 0,
   });
   const [connectionStatus, setConnectionStatus] = useState('Connecting...');
   const [rooms, setRooms] = useState([
@@ -62,12 +66,16 @@ function App() {
           totalAlerts: prev.totalAlerts + 1,
           fallCount: alert.type === 'FALL' ? prev.fallCount + 1 : prev.fallCount,
           rapidMovementCount: alert.type === 'RAPID_MOVEMENT' ? prev.rapidMovementCount + 1 : prev.rapidMovementCount,
+          seizureCount: alert.type === 'SEIZURE' ? prev.seizureCount + 1 : prev.seizureCount,
+          bedExitCount: alert.type === 'BED_EXIT' ? prev.bedExitCount + 1 : prev.bedExitCount,
+          abnormalPostureCount: alert.type === 'ABNORMAL_POSTURE' ? prev.abnormalPostureCount + 1 : prev.abnormalPostureCount,
+          breathingAlertCount: alert.type === 'ABNORMAL_BREATHING' ? prev.breathingAlertCount + 1 : prev.breathingAlertCount,
         }));
 
         // Update room status
         setRooms(prev => prev.map(room =>
           room.id === selectedRoom
-            ? { ...room, status: alert.severity === 'HIGH' ? 'alert' : 'warning', lastAlert: alert }
+            ? { ...room, status: alert.severity === 'CRITICAL' || alert.severity === 'HIGH' ? 'alert' : 'warning', lastAlert: alert }
             : room
         ));
 
@@ -75,7 +83,7 @@ function App() {
         fetchPatientDetails(selectedRoom);
 
         // Play alert sound
-        if (alert.severity === 'HIGH') {
+        if (alert.severity === 'CRITICAL' || alert.severity === 'HIGH') {
           playAlertSound();
         }
       };
@@ -255,8 +263,12 @@ function App() {
       setAlerts(processResult.alerts);
       setStats({
         totalAlerts: processResult.alerts.length,
-        fallCount: processResult.summary.fall_count,
-        rapidMovementCount: processResult.summary.rapid_movement_count,
+        fallCount: processResult.summary.fall_count || 0,
+        rapidMovementCount: processResult.summary.rapid_movement_count || 0,
+        seizureCount: processResult.summary.seizure_count || 0,
+        bedExitCount: processResult.summary.bed_exit_count || 0,
+        abnormalPostureCount: processResult.summary.abnormal_posture_count || 0,
+        breathingAlertCount: processResult.summary.abnormal_breathing_count || 0,
       });
 
       // Update room status based on alerts
@@ -291,6 +303,10 @@ function App() {
       totalAlerts: 0,
       fallCount: 0,
       rapidMovementCount: 0,
+      seizureCount: 0,
+      bedExitCount: 0,
+      abnormalPostureCount: 0,
+      breathingAlertCount: 0,
     });
   };
 
@@ -353,7 +369,10 @@ function App() {
               <div
                 key={room.id}
                 className={`room-card ${selectedRoom === room.id ? 'selected' : ''} ${room.status}`}
-                onClick={() => setSelectedRoom(room.id)}
+                onClick={() => {
+                  setSelectedRoom(room.id);
+                  setPatientDetails(null); // Clear patient details when switching rooms
+                }}
                 style={{ borderColor: selectedRoom === room.id ? getRoomStatusColor(room.status) : 'var(--border-color)' }}
               >
                 <div className="room-header">
@@ -385,29 +404,67 @@ function App() {
                   )}
                 </div>
                 
-                {/* Patient Details - Shows when room is selected and has alert */}
-                {selectedRoom === room.id && patientDetails && (
+                {/* Patient Details - Shows when room is selected */}
+                {selectedRoom === room.id && (
                   <div className="room-patient-details">
-                    <div className="patient-detail-row">
-                      <span className="detail-label">ID:</span>
-                      <span className="detail-value">{patientDetails['patient id'] || patientDetails.patientId || 'N/A'}</span>
-                    </div>
-                    <div className="patient-detail-row">
-                      <span className="detail-label">Name:</span>
-                      <span className="detail-value">{patientDetails['patient name'] || patientDetails.patientName || patientDetails.name || 'N/A'}</span>
-                    </div>
-                    <div className="patient-detail-row">
-                      <span className="detail-label">Disease:</span>
-                      <span className="detail-value">{patientDetails.disease || 'N/A'}</span>
-                    </div>
-                    <div className="patient-detail-row">
-                      <span className="detail-label">Doctor:</span>
-                      <span className="detail-value">{patientDetails['doctor name'] || patientDetails.doctorName || 'N/A'}</span>
-                    </div>
-                    <div className="patient-detail-row">
-                      <span className="detail-label">Bystander:</span>
-                      <span className="detail-value">{patientDetails.bystander || 'N/A'}</span>
-                    </div>
+                    {!patientDetails ? (
+                      <button 
+                        className="btn-load-patient"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fetchPatientDetails(room.id);
+                        }}
+                        disabled={loadingPatient}
+                      >
+                        {loadingPatient ? (
+                          <>
+                            <span className="loading-small"></span>
+                            Loading...
+                          </>
+                        ) : (
+                          <>
+                            👤 Load Patient Details
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <>
+                        <div className="patient-detail-row">
+                          <span className="detail-label">ID:</span>
+                          <span className="detail-value">{patientDetails['patient id'] || patientDetails.patientId || 'N/A'}</span>
+                        </div>
+                        <div className="patient-detail-row">
+                          <span className="detail-label">Name:</span>
+                          <span className="detail-value">{patientDetails['patient name'] || patientDetails.patientName || patientDetails.name || 'N/A'}</span>
+                        </div>
+                        <div className="patient-detail-row">
+                          <span className="detail-label">Room:</span>
+                          <span className="detail-value">{patientDetails['room no'] || patientDetails.roomNo || patientDetails.room || 'N/A'}</span>
+                        </div>
+                        <div className="patient-detail-row">
+                          <span className="detail-label">Disease:</span>
+                          <span className="detail-value">{patientDetails.disease || 'N/A'}</span>
+                        </div>
+                        <div className="patient-detail-row">
+                          <span className="detail-label">Doctor:</span>
+                          <span className="detail-value">{patientDetails['doctor name'] || patientDetails.doctorName || 'N/A'}</span>
+                        </div>
+                        <div className="patient-detail-row">
+                          <span className="detail-label">Bystander:</span>
+                          <span className="detail-value">{patientDetails.bystander || 'N/A'}</span>
+                        </div>
+                        <button 
+                          className="btn-refresh-patient"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            fetchPatientDetails(room.id);
+                          }}
+                          disabled={loadingPatient}
+                        >
+                          🔄 Refresh
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
                 
@@ -433,10 +490,26 @@ function App() {
 
           <div className="card stat-card">
             <div className="card-icon" style={{ background: 'linear-gradient(135deg, hsl(0, 80%, 60%), hsl(20, 80%, 60%))' }}>
-              ⚠️
+              🚨
             </div>
             <div className="stat-value">{stats.fallCount}</div>
             <div className="stat-label">Fall Incidents</div>
+          </div>
+
+          <div className="card stat-card">
+            <div className="card-icon" style={{ background: 'linear-gradient(135deg, hsl(280, 80%, 60%), hsl(300, 80%, 60%))' }}>
+              💥
+            </div>
+            <div className="stat-value">{stats.seizureCount}</div>
+            <div className="stat-label">Seizure Alerts</div>
+          </div>
+
+          <div className="card stat-card">
+            <div className="card-icon" style={{ background: 'linear-gradient(135deg, hsl(30, 90%, 55%), hsl(50, 90%, 55%))' }}>
+              🚪
+            </div>
+            <div className="stat-value">{stats.bedExitCount}</div>
+            <div className="stat-label">Bed Exits</div>
           </div>
 
           <div className="card stat-card">
@@ -445,6 +518,22 @@ function App() {
             </div>
             <div className="stat-value">{stats.rapidMovementCount}</div>
             <div className="stat-label">Rapid Movements</div>
+          </div>
+
+          <div className="card stat-card">
+            <div className="card-icon" style={{ background: 'linear-gradient(135deg, hsl(260, 70%, 60%), hsl(280, 70%, 60%))' }}>
+              🤸
+            </div>
+            <div className="stat-value">{stats.abnormalPostureCount}</div>
+            <div className="stat-label">Abnormal Posture</div>
+          </div>
+
+          <div className="card stat-card">
+            <div className="card-icon" style={{ background: 'linear-gradient(135deg, hsl(180, 70%, 55%), hsl(200, 70%, 55%))' }}>
+              🫁
+            </div>
+            <div className="stat-value">{stats.breathingAlertCount}</div>
+            <div className="stat-label">Breathing Alerts</div>
           </div>
         </div>
 
@@ -527,9 +616,13 @@ function App() {
                   <div className="alert-header">
                     <div className="alert-type">
                       <span>
-                        {alert.type === 'FALL' ? '🚨' : '⚡'}
+                        {alert.type === 'FALL' ? '🚨' : 
+                         alert.type === 'SEIZURE' ? '💥' :
+                         alert.type === 'BED_EXIT' ? '🚪' :
+                         alert.type === 'ABNORMAL_POSTURE' ? '🤸' :
+                         alert.type === 'ABNORMAL_BREATHING' ? '🫁' : '⚡'}
                       </span>
-                      <span>{alert.type.replace('_', ' ')}</span>
+                      <span>{alert.type.replace(/_/g, ' ')}</span>
                     </div>
                     <span className={`alert-badge ${alert.severity.toLowerCase()}`}>
                       {alert.severity}
@@ -544,6 +637,15 @@ function App() {
                     )}
                     {alert.speed && (
                       <span>💨 Speed: {(alert.speed * 100).toFixed(1)}%</span>
+                    )}
+                    {alert.distance && (
+                      <span>📏 Distance: {(alert.distance * 100).toFixed(1)}%</span>
+                    )}
+                    {alert.posture_type && (
+                      <span>🤸 Type: {alert.posture_type}</span>
+                    )}
+                    {alert.breathing_rate && (
+                      <span>🫁 Rate: {alert.breathing_rate.toFixed(1)} bpm ({alert.status})</span>
                     )}
                   </div>
                 </div>

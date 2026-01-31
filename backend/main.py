@@ -96,9 +96,22 @@ else:
 class ActivityDetector:
     def __init__(self):
         self.prev_positions = []
+        self.prev_landmarks_history = []  # For seizure detection
+        self.bed_region = None  # Will be set based on first detection
+        self.breathing_history = []  # For breathing rate
         self.fall_threshold = 0.3  # Vertical position threshold
-        self.rapid_movement_threshold = 0.15  # Movement speed threshold
+        self.rapid_movement_threshold = 0.08  # Movement speed threshold (lowered from 0.15)
         self.frame_buffer_size = 10
+        self.seizure_buffer_size = 30  # Frames to analyze for seizure
+        self.breathing_buffer_size = 60  # Frames for breathing (2 seconds at 30fps)
+    
+    def reset(self):
+        """Reset detector state for new video"""
+        self.prev_positions = []
+        self.prev_landmarks_history = []
+        self.bed_region = None
+        self.breathing_history = []
+        print("Detector state reset for new video")
         
     def detect_fall(self, landmarks):
         """Detect fall based on pose landmarks"""
@@ -156,6 +169,182 @@ class ActivityDetector:
         
         return False, 0.0
     
+    def detect_seizure(self, landmarks):
+        """Detect seizure-like convulsive movements"""
+        if not landmarks:
+            return False, 0.0
+        
+        # Track multiple body parts for erratic movement
+        key_points = [
+            landmarks[mp_pose_landmark.LEFT_SHOULDER],
+            landmarks[mp_pose_landmark.RIGHT_SHOULDER],
+            landmarks[mp_pose_landmark.LEFT_HIP],
+            landmarks[mp_pose_landmark.RIGHT_HIP],
+        ]
+        
+        # Calculate variance in positions
+        positions = np.array([[p.x, p.y] for p in key_points])
+        
+        # Store landmark history
+        self.prev_landmarks_history.append(positions)
+        if len(self.prev_landmarks_history) > self.seizure_buffer_size:
+            self.prev_landmarks_history.pop(0)
+        
+        # Need enough history to detect seizure
+        if len(self.prev_landmarks_history) < 20:
+            return False, 0.0
+        
+        # Calculate movement variance across frames
+        movements = []
+        for i in range(1, len(self.prev_landmarks_history)):
+            diff = np.linalg.norm(
+                self.prev_landmarks_history[i] - self.prev_landmarks_history[i-1]
+            )
+            movements.append(diff)
+        
+        # High variance + high frequency = seizure
+        movement_variance = np.var(movements)
+        movement_mean = np.mean(movements)
+        
+        # Seizure: high variance with consistent high movement
+        is_seizure = movement_variance > 0.01 and movement_mean > 0.05
+        
+        return is_seizure, float(movement_variance)
+    
+    def detect_bed_exit(self, landmarks, frame_shape):
+        """Detect when patient exits bed area"""
+        if not landmarks:
+            return False, 0.0
+        
+        # Get hip position (center of body)
+        left_hip = landmarks[mp_pose_landmark.LEFT_HIP]
+        right_hip = landmarks[mp_pose_landmark.RIGHT_HIP]
+        
+        hip_x = (left_hip.x + right_hip.x) / 2
+        hip_y = (left_hip.y + right_hip.y) / 2
+        
+        # Initialize bed region on first detection (assume patient starts in bed)
+        if self.bed_region is None:
+            self.bed_region = {
+                'x_min': hip_x - 0.2,
+                'x_max': hip_x + 0.2,
+                'y_min': hip_y - 0.2,
+                'y_max': hip_y + 0.2
+            }
+            return False, 0.0
+        
+        # Check if patient is outside bed region
+        is_outside = (
+            hip_x < self.bed_region['x_min'] or 
+            hip_x > self.bed_region['x_max'] or
+            hip_y < self.bed_region['y_min'] or 
+            hip_y > self.bed_region['y_max']
+        )
+        
+        # Calculate distance from bed center
+        bed_center_x = (self.bed_region['x_min'] + self.bed_region['x_max']) / 2
+        bed_center_y = (self.bed_region['y_min'] + self.bed_region['y_max']) / 2
+        distance = np.sqrt((hip_x - bed_center_x)**2 + (hip_y - bed_center_y)**2)
+        
+        return is_outside, float(distance)
+    
+    def detect_abnormal_posture(self, landmarks):
+        """Detect unusual body positions"""
+        if not landmarks:
+            return False, 0.0, "None"
+        
+        nose = landmarks[mp_pose_landmark.NOSE]
+        left_shoulder = landmarks[mp_pose_landmark.LEFT_SHOULDER]
+        right_shoulder = landmarks[mp_pose_landmark.RIGHT_SHOULDER]
+        left_hip = landmarks[mp_pose_landmark.LEFT_HIP]
+        right_hip = landmarks[mp_pose_landmark.RIGHT_HIP]
+        
+        # Calculate body angles
+        shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+        hip_y = (left_hip.y + right_hip.y) / 2
+        
+        # Check for various abnormal postures
+        posture_type = "Normal"
+        is_abnormal = False
+        confidence = 0.0
+        
+        # 1. Upside down (head below hips)
+        if nose.y > hip_y + 0.1:
+            is_abnormal = True
+            posture_type = "Upside Down"
+            confidence = abs(nose.y - hip_y)
+        
+        # 2. Extreme lean (shoulders very tilted)
+        shoulder_tilt = abs(left_shoulder.y - right_shoulder.y)
+        if shoulder_tilt > 0.15:
+            is_abnormal = True
+            posture_type = "Extreme Lean"
+            confidence = shoulder_tilt
+        
+        # 3. Twisted body (shoulders and hips misaligned)
+        shoulder_center_x = (left_shoulder.x + right_shoulder.x) / 2
+        hip_center_x = (left_hip.x + right_hip.x) / 2
+        body_twist = abs(shoulder_center_x - hip_center_x)
+        if body_twist > 0.2:
+            is_abnormal = True
+            posture_type = "Twisted Body"
+            confidence = body_twist
+        
+        # 4. Curled up (very compressed vertically)
+        body_height = abs(nose.y - hip_y)
+        if body_height < 0.15:
+            is_abnormal = True
+            posture_type = "Curled Up"
+            confidence = 1.0 - body_height
+        
+        return is_abnormal, float(confidence), posture_type
+    
+    def detect_breathing_rate(self, landmarks):
+        """Estimate breathing rate from chest movement"""
+        if not landmarks:
+            return 0.0, "Unknown"
+        
+        # Track shoulder movement (rises with breathing)
+        left_shoulder = landmarks[mp_pose_landmark.LEFT_SHOULDER]
+        right_shoulder = landmarks[mp_pose_landmark.RIGHT_SHOULDER]
+        
+        shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+        
+        # Store breathing history
+        self.breathing_history.append(shoulder_y)
+        if len(self.breathing_history) > self.breathing_buffer_size:
+            self.breathing_history.pop(0)
+        
+        # Need enough data to estimate breathing
+        if len(self.breathing_history) < 30:
+            return 0.0, "Calculating..."
+        
+        # Count peaks (breaths) in the signal
+        breathing_array = np.array(self.breathing_history)
+        
+        # Simple peak detection
+        peaks = 0
+        for i in range(1, len(breathing_array) - 1):
+            if breathing_array[i] > breathing_array[i-1] and breathing_array[i] > breathing_array[i+1]:
+                # Check if peak is significant
+                if abs(breathing_array[i] - np.mean(breathing_array)) > 0.005:
+                    peaks += 1
+        
+        # Convert to breaths per minute (assuming 30 fps, 60 frames = 2 seconds)
+        breaths_per_minute = (peaks / len(self.breathing_history)) * 30 * 60
+        
+        # Classify breathing rate
+        if breaths_per_minute < 12:
+            status = "Slow (Bradypnea)"
+        elif breaths_per_minute > 20:
+            status = "Fast (Tachypnea)"
+        else:
+            status = "Normal"
+        
+        return float(breaths_per_minute), status
+        
+        return False, 0.0
+    
     def analyze_frame(self, frame):
         """Analyze a single frame for unusual activities"""
         if pose_detector is None:
@@ -163,8 +352,14 @@ class ActivityDetector:
             return {
                 "fall_detected": False,
                 "rapid_movement": False,
+                "seizure_detected": False,
+                "bed_exit_detected": False,
+                "abnormal_posture_detected": False,
                 "fall_confidence": 0.0,
                 "movement_speed": 0.0,
+                "breathing_rate": 0.0,
+                "breathing_status": "Unknown",
+                "posture_type": "Unknown",
                 "pose_detected": False
             }, frame
             
@@ -180,8 +375,17 @@ class ActivityDetector:
         activities = {
             "fall_detected": False,
             "rapid_movement": False,
+            "seizure_detected": False,
+            "bed_exit_detected": False,
+            "abnormal_posture_detected": False,
             "fall_confidence": 0.0,
             "movement_speed": 0.0,
+            "seizure_confidence": 0.0,
+            "bed_exit_distance": 0.0,
+            "posture_confidence": 0.0,
+            "posture_type": "Normal",
+            "breathing_rate": 0.0,
+            "breathing_status": "Unknown",
             "pose_detected": False
         }
         
@@ -189,21 +393,66 @@ class ActivityDetector:
             activities["pose_detected"] = True
             landmarks = detection_result.pose_landmarks[0]  # Get first person
             
-            # Detect fall
+            # 1. Detect fall
             is_fall, fall_conf = self.detect_fall(landmarks)
             activities["fall_detected"] = is_fall
             activities["fall_confidence"] = float(fall_conf)
             
-            # Detect rapid movement
+            # 2. Detect rapid movement
             is_rapid, speed = self.detect_rapid_movement(landmarks)
             activities["rapid_movement"] = is_rapid
             activities["movement_speed"] = speed
+            
+            # 3. Detect seizure
+            is_seizure, seizure_conf = self.detect_seizure(landmarks)
+            activities["seizure_detected"] = is_seizure
+            activities["seizure_confidence"] = seizure_conf
+            
+            # 4. Detect bed exit
+            is_bed_exit, exit_distance = self.detect_bed_exit(landmarks, frame.shape)
+            activities["bed_exit_detected"] = is_bed_exit
+            activities["bed_exit_distance"] = exit_distance
+            
+            # 5. Detect abnormal posture
+            is_abnormal, posture_conf, posture_type = self.detect_abnormal_posture(landmarks)
+            activities["abnormal_posture_detected"] = is_abnormal
+            activities["posture_confidence"] = posture_conf
+            activities["posture_type"] = posture_type
+            
+            # 6. Detect breathing rate
+            breathing_rate, breathing_status = self.detect_breathing_rate(landmarks)
+            activities["breathing_rate"] = breathing_rate
+            activities["breathing_status"] = breathing_status
             
             # Draw pose landmarks on frame (simple circles)
             for landmark in landmarks:
                 x = int(landmark.x * frame.shape[1])
                 y = int(landmark.y * frame.shape[0])
                 cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
+            
+            # Draw alerts on frame
+            y_offset = 30
+            if is_fall:
+                cv2.putText(frame, "FALL DETECTED!", (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                y_offset += 40
+            if is_seizure:
+                cv2.putText(frame, "SEIZURE DETECTED!", (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2)
+                y_offset += 40
+            if is_bed_exit:
+                cv2.putText(frame, "BED EXIT DETECTED!", (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 165, 0), 2)
+                y_offset += 40
+            if is_abnormal:
+                cv2.putText(frame, f"ABNORMAL POSTURE: {posture_type}", (10, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                y_offset += 40
+            
+            # Display breathing rate
+            cv2.putText(frame, f"Breathing: {breathing_rate:.1f} bpm ({breathing_status})", 
+                       (10, frame.shape[0] - 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         
         return activities, frame
 
@@ -261,6 +510,10 @@ async def process_video(filename: str):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         
+        # Reset detector state for new video
+        detector.reset()
+        print(f"Processing video: {filename}, Total frames: {total_frames}, FPS: {fps}")
+        
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -274,36 +527,101 @@ async def process_video(filename: str):
                 
                 timestamp = frame_count / fps
                 
-                # Generate alerts
+                # Debug logging
+                if activities["pose_detected"]:
+                    print(f"Frame {frame_count}: Pose detected, Movement speed: {activities['movement_speed']:.4f}")
+                
+                # Generate alerts for all detection types
                 if activities["fall_detected"]:
                     alert = {
                         "type": "FALL",
-                        "severity": "HIGH",
+                        "severity": "CRITICAL",
                         "timestamp": timestamp,
                         "frame": frame_count,
                         "confidence": activities["fall_confidence"],
-                        "message": "Fall detected - Immediate attention required"
+                        "message": "🚨 Fall detected - Immediate attention required!"
                     }
                     alerts.append(alert)
-                    
-                    # Send real-time alert via WebSocket
                     await broadcast_alert(alert)
+                    print(f"ALERT: Fall detected at frame {frame_count}")
                 
-                elif activities["rapid_movement"]:
+                if activities["seizure_detected"]:
+                    alert = {
+                        "type": "SEIZURE",
+                        "severity": "CRITICAL",
+                        "timestamp": timestamp,
+                        "frame": frame_count,
+                        "confidence": activities["seizure_confidence"],
+                        "message": "🚨 Seizure detected - Emergency response needed!"
+                    }
+                    alerts.append(alert)
+                    await broadcast_alert(alert)
+                    print(f"ALERT: Seizure detected at frame {frame_count}")
+                
+                if activities["bed_exit_detected"]:
+                    alert = {
+                        "type": "BED_EXIT",
+                        "severity": "HIGH",
+                        "timestamp": timestamp,
+                        "frame": frame_count,
+                        "distance": activities["bed_exit_distance"],
+                        "message": "⚠️ Patient left bed - Check immediately!"
+                    }
+                    alerts.append(alert)
+                    await broadcast_alert(alert)
+                    print(f"ALERT: Bed exit detected at frame {frame_count}")
+                
+                if activities["abnormal_posture_detected"]:
+                    alert = {
+                        "type": "ABNORMAL_POSTURE",
+                        "severity": "MEDIUM",
+                        "timestamp": timestamp,
+                        "frame": frame_count,
+                        "posture_type": activities["posture_type"],
+                        "confidence": activities["posture_confidence"],
+                        "message": f"⚠️ Abnormal posture detected: {activities['posture_type']}"
+                    }
+                    alerts.append(alert)
+                    await broadcast_alert(alert)
+                    print(f"ALERT: Abnormal posture detected at frame {frame_count}: {activities['posture_type']}")
+                
+                if activities["rapid_movement"]:
                     alert = {
                         "type": "RAPID_MOVEMENT",
                         "severity": "MEDIUM",
                         "timestamp": timestamp,
                         "frame": frame_count,
                         "speed": activities["movement_speed"],
-                        "message": "Rapid movement detected - Check patient"
+                        "message": "⚡ Rapid movement detected - Check patient"
                     }
                     alerts.append(alert)
-                    
-                    # Send real-time alert via WebSocket
                     await broadcast_alert(alert)
+                    print(f"ALERT: Rapid movement detected at frame {frame_count}, speed: {activities['movement_speed']:.4f}")
+                
+                # Monitor breathing rate (alert if abnormal)
+                if activities["breathing_rate"] > 0:
+                    if activities["breathing_rate"] < 10 or activities["breathing_rate"] > 25:
+                        alert = {
+                            "type": "ABNORMAL_BREATHING",
+                            "severity": "HIGH",
+                            "timestamp": timestamp,
+                            "frame": frame_count,
+                            "breathing_rate": activities["breathing_rate"],
+                            "status": activities["breathing_status"],
+                            "message": f"⚠️ Abnormal breathing: {activities['breathing_rate']:.1f} bpm ({activities['breathing_status']})"
+                        }
+                        alerts.append(alert)
+                        await broadcast_alert(alert)
         
         cap.release()
+        
+        print(f"Video processing complete: {len(alerts)} total alerts")
+        print(f"  - Falls: {len([a for a in alerts if a['type'] == 'FALL'])}")
+        print(f"  - Rapid movements: {len([a for a in alerts if a['type'] == 'RAPID_MOVEMENT'])}")
+        print(f"  - Seizures: {len([a for a in alerts if a['type'] == 'SEIZURE'])}")
+        print(f"  - Bed exits: {len([a for a in alerts if a['type'] == 'BED_EXIT'])}")
+        print(f"  - Abnormal postures: {len([a for a in alerts if a['type'] == 'ABNORMAL_POSTURE'])}")
+        print(f"  - Breathing alerts: {len([a for a in alerts if a['type'] == 'ABNORMAL_BREATHING'])}")
         
         return JSONResponse({
             "success": True,
@@ -312,7 +630,11 @@ async def process_video(filename: str):
             "alerts": alerts,
             "summary": {
                 "fall_count": len([a for a in alerts if a["type"] == "FALL"]),
-                "rapid_movement_count": len([a for a in alerts if a["type"] == "RAPID_MOVEMENT"])
+                "seizure_count": len([a for a in alerts if a["type"] == "SEIZURE"]),
+                "bed_exit_count": len([a for a in alerts if a["type"] == "BED_EXIT"]),
+                "abnormal_posture_count": len([a for a in alerts if a["type"] == "ABNORMAL_POSTURE"]),
+                "rapid_movement_count": len([a for a in alerts if a["type"] == "RAPID_MOVEMENT"]),
+                "abnormal_breathing_count": len([a for a in alerts if a["type"] == "ABNORMAL_BREATHING"])
             }
         })
         
