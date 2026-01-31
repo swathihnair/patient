@@ -31,22 +31,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MediaPipe setup - handle different versions
+# MediaPipe setup - New Tasks API
 try:
-    mp_pose = mp.solutions.pose
-    mp_drawing = mp.solutions.drawing_utils
-    pose = mp_pose.Pose(
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    )
-except AttributeError:
-    # Newer mediapipe version - use tasks API
     from mediapipe.tasks import python
     from mediapipe.tasks.python import vision
-    mp_pose = None
-    mp_drawing = None
-    pose = None
-    print("Warning: MediaPipe pose detection not available in this version")
+    import mediapipe as mp
+    
+    # Download pose landmarker model if not exists
+    import urllib.request
+    model_path = "pose_landmarker.task"
+    if not os.path.exists(model_path):
+        print("Downloading pose landmarker model...")
+        url = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+        urllib.request.urlretrieve(url, model_path)
+        print("Model downloaded successfully")
+    
+    # Create pose landmarker
+    base_options = python.BaseOptions(model_asset_path=model_path)
+    options = vision.PoseLandmarkerOptions(
+        base_options=base_options,
+        output_segmentation_masks=False,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    pose_detector = vision.PoseLandmarker.create_from_options(options)
+    
+    # Pose landmark indices (same as old MediaPipe)
+    class PoseLandmark:
+        NOSE = 0
+        LEFT_SHOULDER = 11
+        RIGHT_SHOULDER = 12
+        LEFT_HIP = 23
+        RIGHT_HIP = 24
+    
+    mp_pose_landmark = PoseLandmark
+    print("MediaPipe pose detection initialized successfully")
+except Exception as e:
+    print(f"Warning: MediaPipe pose detection not available: {e}")
+    pose_detector = None
+    mp_pose_landmark = None
 
 # Store active WebSocket connections
 active_connections: List[WebSocket] = []
@@ -82,9 +106,9 @@ class ActivityDetector:
             return False, 0.0
         
         # Get key points
-        nose = landmarks[mp_pose.PoseLandmark.NOSE.value]
-        left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
-        right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value]
+        nose = landmarks[mp_pose_landmark.NOSE]
+        left_hip = landmarks[mp_pose_landmark.LEFT_HIP]
+        right_hip = landmarks[mp_pose_landmark.RIGHT_HIP]
         
         # Calculate hip midpoint
         hip_y = (left_hip.y + right_hip.y) / 2
@@ -104,11 +128,11 @@ class ActivityDetector:
         
         # Get center of mass (average of key points)
         key_points = [
-            landmarks[mp_pose.PoseLandmark.NOSE.value],
-            landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value],
-            landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value],
-            landmarks[mp_pose.PoseLandmark.LEFT_HIP.value],
-            landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value],
+            landmarks[mp_pose_landmark.NOSE],
+            landmarks[mp_pose_landmark.LEFT_SHOULDER],
+            landmarks[mp_pose_landmark.RIGHT_SHOULDER],
+            landmarks[mp_pose_landmark.LEFT_HIP],
+            landmarks[mp_pose_landmark.RIGHT_HIP],
         ]
         
         center_x = np.mean([p.x for p in key_points])
@@ -134,7 +158,7 @@ class ActivityDetector:
     
     def analyze_frame(self, frame):
         """Analyze a single frame for unusual activities"""
-        if pose is None:
+        if pose_detector is None:
             # MediaPipe not available
             return {
                 "fall_detected": False,
@@ -146,7 +170,12 @@ class ActivityDetector:
             
         # Convert to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(rgb_frame)
+        
+        # Create MediaPipe Image
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        
+        # Detect pose
+        detection_result = pose_detector.detect(mp_image)
         
         activities = {
             "fall_detected": False,
@@ -156,9 +185,9 @@ class ActivityDetector:
             "pose_detected": False
         }
         
-        if results.pose_landmarks:
+        if detection_result.pose_landmarks:
             activities["pose_detected"] = True
-            landmarks = results.pose_landmarks.landmark
+            landmarks = detection_result.pose_landmarks[0]  # Get first person
             
             # Detect fall
             is_fall, fall_conf = self.detect_fall(landmarks)
@@ -170,14 +199,11 @@ class ActivityDetector:
             activities["rapid_movement"] = is_rapid
             activities["movement_speed"] = speed
             
-            # Draw pose landmarks on frame
-            mp_drawing.draw_landmarks(
-                frame,
-                results.pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2),
-            )
+            # Draw pose landmarks on frame (simple circles)
+            for landmark in landmarks:
+                x = int(landmark.x * frame.shape[1])
+                y = int(landmark.y * frame.shape[0])
+                cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
         
         return activities, frame
 
