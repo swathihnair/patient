@@ -10,3 +10,5 @@ aiofiles==23.2.1
 pydantic==2.5.3
 tensorflow==2.15.0
 scikit-learn==1.4.0
+google-generativeai==0.3.2
+pillow==10.2.0

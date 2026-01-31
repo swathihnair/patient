@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './index.css';
+import GeneralWard from './GeneralWard';
 
 const API_URL = 'http://localhost:8000';
 
@@ -21,6 +22,7 @@ function App() {
     { id: 4, name: 'Room 104', patient: 'Patient D', status: 'normal', video: null, lastAlert: null },
   ]);
   const [selectedRoom, setSelectedRoom] = useState(1);
+  const [viewMode, setViewMode] = useState('rooms'); // 'rooms' or 'general-ward'
   const wsRef = useRef(null);
   const fileInputRef = useRef(null);
   const videoRef = useRef(null);
@@ -265,6 +267,11 @@ function App() {
     }
   };
 
+  // If general ward mode, show the GeneralWard component
+  if (viewMode === 'general-ward') {
+    return <GeneralWard onBack={() => setViewMode('rooms')} />;
+  }
+
   return (
     <div className="app">
       {/* Header */}
@@ -279,6 +286,18 @@ function App() {
           </div>
         </div>
         <div className="header-right">
+          <div className="view-mode-selector">
+            <label htmlFor="viewMode">View:</label>
+            <select
+              id="viewMode"
+              value={viewMode}
+              onChange={(e) => setViewMode(e.target.value)}
+              className="view-mode-dropdown"
+            >
+              <option value="rooms">Individual Rooms</option>
+              <option value="general-ward">General Ward</option>
+            </select>
+          </div>
           <div className="status-indicator">
             <div className="status-dot"></div>
             <span className="status-text">{connectionStatus}</span>
@@ -290,7 +309,9 @@ function App() {
       <main className="main-content">
         {/* Room Grid */}
         <div className="rooms-section">
-          <h2 className="section-title">Patient Rooms</h2>
+          <h2 className="section-title">
+            {viewMode === 'general-ward' ? 'General Ward - All Patients' : 'Patient Rooms'}
+          </h2>
           <div className="rooms-grid">
             {rooms.map(room => (
               <div
@@ -373,7 +394,9 @@ function App() {
         >
           <div className="upload-icon">📹</div>
           <div className="upload-text">
-            <h3>Upload Video for {rooms.find(r => r.id === selectedRoom)?.name}</h3>
+            <h3>
+              Upload Video for {viewMode === 'general-ward' ? 'General Ward' : rooms.find(r => r.id === selectedRoom)?.name}
+            </h3>
             <p>
               {uploadedFile
                 ? `Selected: ${uploadedFile.name}`
@@ -416,7 +439,9 @@ function App() {
         {/* Alerts List */}
         <div className="alerts-container">
           <div className="alerts-header">
-            <h2 className="alerts-title">Activity Alerts - {rooms.find(r => r.id === selectedRoom)?.name}</h2>
+            <h2 className="alerts-title">
+              Activity Alerts - {viewMode === 'general-ward' ? 'General Ward' : rooms.find(r => r.id === selectedRoom)?.name}
+            </h2>
             {alerts.length > 0 && (
               <button className="btn btn-secondary" onClick={clearAlerts}>
                 🗑️ Clear All

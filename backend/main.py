@@ -11,25 +11,42 @@ import asyncio
 import aiofiles
 import os
 from pathlib import Path
+from google import genai
+from PIL import Image
+import io
+import base64
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI(title="Patient Monitoring System")
 
 # CORS middleware for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174", "http://localhost:5175"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# MediaPipe setup
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
-pose = mp_pose.Pose(
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+# MediaPipe setup - handle different versions
+try:
+    mp_pose = mp.solutions.pose
+    mp_drawing = mp.solutions.drawing_utils
+    pose = mp_pose.Pose(
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+except AttributeError:
+    # Newer mediapipe version - use tasks API
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
+    mp_pose = None
+    mp_drawing = None
+    pose = None
+    print("Warning: MediaPipe pose detection not available in this version")
 
 # Store active WebSocket connections
 active_connections: List[WebSocket] = []
@@ -37,6 +54,20 @@ active_connections: List[WebSocket] = []
 # Create uploads directory
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Configure Gemini API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+print(f"GEMINI_API_KEY loaded: {'Yes' if GEMINI_API_KEY else 'No'}")
+if GEMINI_API_KEY:
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("Gemini client initialized successfully")
+    except Exception as e:
+        print(f"Error initializing Gemini client: {e}")
+        client = None
+else:
+    print("Warning: GEMINI_API_KEY not found in environment")
+    client = None
 
 class ActivityDetector:
     def __init__(self):
@@ -103,6 +134,16 @@ class ActivityDetector:
     
     def analyze_frame(self, frame):
         """Analyze a single frame for unusual activities"""
+        if pose is None:
+            # MediaPipe not available
+            return {
+                "fall_detected": False,
+                "rapid_movement": False,
+                "fall_confidence": 0.0,
+                "movement_speed": 0.0,
+                "pose_detected": False
+            }, frame
+            
         # Convert to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose.process(rgb_frame)
@@ -287,6 +328,188 @@ async def health_check():
         "active_connections": len(active_connections),
         "timestamp": datetime.now().isoformat()
     }
+
+@app.post("/api/compare-ward-images")
+async def compare_ward_images(
+    image1: UploadFile = File(...),
+    image2: UploadFile = File(...)
+):
+    """Compare two ward images to detect missing patients using Gemini AI"""
+    try:
+        if not client:
+            return JSONResponse({
+                "success": False,
+                "error": "GEMINI_API_KEY not configured. Please set it in your .env file."
+            }, status_code=500)
+        
+        print("Reading images...")
+        # Read both images
+        image1_data = await image1.read()
+        image2_data = await image2.read()
+        pil_image1 = Image.open(io.BytesIO(image1_data))
+        pil_image2 = Image.open(io.BytesIO(image2_data))
+        print(f"Images loaded: {pil_image1.size}, {pil_image2.size}")
+        
+        # Create prompt for Gemini
+        prompt = """Compare these two hospital ward images and identify any missing patients.
+
+Image 1 (Before): Reference image with all patients present
+Image 2 (After): Current ward state to check
+
+Please analyze and provide a detailed comparison in the following JSON format:
+{
+    "summary": "Brief overview of what changed between the two images",
+    "total_missing": number of patients missing,
+    "missing_patients": [
+        {
+            "bed_number": "Bed identifier (e.g., 'Bed 1', 'Bed 3 - Left side')",
+            "description": "Description of the missing patient's location and what you observe"
+        }
+    ]
+}
+
+Focus on:
+1. Identifying beds/locations that had patients in Image 1 but are empty in Image 2
+2. Noting specific bed positions (left, right, center, near window, etc.)
+3. Describing the exact location to help staff quickly identify missing patients
+4. Being precise about which patients are no longer present
+
+If all patients are present in both images, set total_missing to 0 and missing_patients to an empty array."""
+
+        print("Calling Gemini API...")
+        # Call Gemini API with new SDK
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[prompt, pil_image1, pil_image2]
+        )
+        print("Gemini API response received")
+        
+        # Parse response
+        response_text = response.text.strip()
+        print(f"Response text: {response_text[:200]}...")
+        
+        # Extract JSON from response (handle markdown code blocks)
+        if "```json" in response_text:
+            json_start = response_text.find("```json") + 7
+            json_end = response_text.find("```", json_start)
+            response_text = response_text[json_start:json_end].strip()
+        elif "```" in response_text:
+            json_start = response_text.find("```") + 3
+            json_end = response_text.find("```", json_start)
+            response_text = response_text[json_start:json_end].strip()
+        
+        try:
+            comparison_result = json.loads(response_text)
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
+            # If JSON parsing fails, create a structured response from text
+            comparison_result = {
+                "summary": response_text[:200],
+                "total_missing": 0,
+                "missing_patients": [],
+                "raw_response": response_text
+            }
+        
+        return JSONResponse({
+            "success": True,
+            "comparison_result": comparison_result
+        })
+        
+    except Exception as e:
+        print(f"Error in compare_ward_images: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+@app.post("/api/analyze-ward-presence")
+async def analyze_ward_presence(
+    image: UploadFile = File(...),
+    expected_beds: int = 10
+):
+    """Analyze ward image to detect patient presence at each bed using Gemini AI"""
+    try:
+        if not client:
+            return JSONResponse({
+                "success": False,
+                "error": "GEMINI_API_KEY not configured. Please set it in your .env file."
+            }, status_code=500)
+        
+        # Read image
+        image_data = await image.read()
+        pil_image = Image.open(io.BytesIO(image_data))
+        
+        # Create prompt for Gemini
+        prompt = f"""Analyze this hospital ward image and identify patient presence at each bed location.
+
+Expected number of beds: {expected_beds}
+
+Please provide a detailed analysis in the following JSON format:
+{{
+    "summary": "Brief overview of the ward status",
+    "total_beds": number of beds visible in the image,
+    "occupied_beds": number of beds with patients present,
+    "empty_beds": number of empty beds,
+    "empty_spots": [
+        {{
+            "location": "Bed position (e.g., 'Bed 1 - Left side', 'Bed 3 - Center')",
+            "description": "Description of the empty bed location"
+        }}
+    ]
+}}
+
+Focus on:
+1. Identifying all bed locations in the ward
+2. Detecting human presence at each bed
+3. Noting which specific beds/spots are empty
+4. Providing clear location descriptions for empty beds
+
+Be specific about bed positions (left, right, center, near window, etc.) to help staff locate empty beds quickly."""
+
+        # Call Gemini API with new SDK
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[prompt, pil_image]
+        )
+        
+        # Parse response
+        response_text = response.text.strip()
+        
+        # Extract JSON from response (handle markdown code blocks)
+        if "```json" in response_text:
+            json_start = response_text.find("```json") + 7
+            json_end = response_text.find("```", json_start)
+            response_text = response_text[json_start:json_end].strip()
+        elif "```" in response_text:
+            json_start = response_text.find("```") + 3
+            json_end = response_text.find("```", json_start)
+            response_text = response_text[json_start:json_end].strip()
+        
+        try:
+            analysis = json.loads(response_text)
+        except json.JSONDecodeError:
+            # If JSON parsing fails, create a structured response from text
+            analysis = {
+                "summary": response_text[:200],
+                "total_beds": expected_beds,
+                "occupied_beds": 0,
+                "empty_beds": 0,
+                "empty_spots": [],
+                "raw_response": response_text
+            }
+        
+        return JSONResponse({
+            "success": True,
+            "analysis": analysis
+        })
+        
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
 
 if __name__ == "__main__":
     import uvicorn

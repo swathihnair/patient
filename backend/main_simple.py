@@ -9,6 +9,13 @@ import asyncio
 import aiofiles
 import os
 from pathlib import Path
+import google.generativeai as genai
+from PIL import Image
+import io
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI(title="Patient Monitoring System")
 
@@ -28,6 +35,19 @@ active_connections: List[WebSocket] = []
 # Create uploads directory
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Create ward images directory
+WARD_IMAGES_DIR = Path("ward_images")
+WARD_IMAGES_DIR.mkdir(exist_ok=True)
+
+# Configure Gemini AI
+# Note: Set your API key as environment variable: GEMINI_API_KEY
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    gemini_model = None
 
 class ActivityDetector:
     """Simple activity detector using OpenCV without MediaPipe for now"""
@@ -228,8 +248,101 @@ async def health_check():
     return {
         "status": "healthy",
         "active_connections": len(active_connections),
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "gemini_configured": gemini_model is not None
     }
+
+@app.post("/api/compare-ward-images")
+async def compare_ward_images(image1: UploadFile = File(...), image2: UploadFile = File(...)):
+    """Compare two ward images to detect missing patients using Gemini AI"""
+    try:
+        if not gemini_model:
+            return JSONResponse({
+                "success": False,
+                "error": "Gemini AI not configured. Please set GEMINI_API_KEY environment variable."
+            }, status_code=500)
+        
+        # Save uploaded images
+        image1_path = WARD_IMAGES_DIR / f"before_{image1.filename}"
+        image2_path = WARD_IMAGES_DIR / f"after_{image2.filename}"
+        
+        async with aiofiles.open(image1_path, 'wb') as f:
+            content = await image1.read()
+            await f.write(content)
+        
+        async with aiofiles.open(image2_path, 'wb') as f:
+            content = await image2.read()
+            await f.write(content)
+        
+        # Load images for Gemini
+        img1 = Image.open(image1_path)
+        img2 = Image.open(image2_path)
+        
+        # Create prompt for Gemini
+        prompt = """
+        You are analyzing two images of a hospital ward taken at different times.
+        
+        Image 1 is the "before" image (reference).
+        Image 2 is the "after" image (current state).
+        
+        Please compare these two images and identify:
+        1. Which beds have patients in the first image but are empty in the second image
+        2. The bed numbers or positions of missing patients
+        3. Any other significant changes
+        
+        Respond in JSON format with the following structure:
+        {
+            "missing_patients": [
+                {
+                    "bed_number": "Bed 1" or "Bed 2" etc.,
+                    "description": "Brief description of what changed"
+                }
+            ],
+            "summary": "Overall summary of changes",
+            "total_missing": number of missing patients
+        }
+        
+        If you cannot identify specific bed numbers, describe the location (e.g., "left side", "near window", "third bed from entrance").
+        """
+        
+        # Call Gemini API
+        response = gemini_model.generate_content([prompt, img1, img2])
+        
+        # Parse response
+        result_text = response.text
+        
+        # Try to extract JSON from response
+        import json
+        import re
+        
+        # Look for JSON in the response
+        json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+        if json_match:
+            result_json = json.loads(json_match.group())
+        else:
+            # If no JSON found, create a structured response from the text
+            result_json = {
+                "missing_patients": [],
+                "summary": result_text,
+                "total_missing": 0
+            }
+        
+        return JSONResponse({
+            "success": True,
+            "comparison_result": result_json,
+            "raw_response": result_text,
+            "images_saved": {
+                "image1": str(image1_path),
+                "image2": str(image2_path)
+            }
+        })
+        
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
 
 if __name__ == "__main__":
     import uvicorn
